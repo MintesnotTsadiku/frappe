@@ -3,7 +3,12 @@
 
 import json
 import typing
+<<<<<<< HEAD
 from urllib.parse import quote_plus
+=======
+from typing import Any
+from urllib.parse import quote
+>>>>>>> 2f53a9a8a4 (test(email): cover space and slash encoding in document email addresses)
 
 import frappe
 import frappe.defaults
@@ -403,7 +408,7 @@ def get_document_email(doctype, name):
 		return None
 
 	email = email.split("@")
-	return f"{email[0]}+{quote_plus(doctype)}={quote_plus(cstr(name))}@{email[1]}"
+	return f"{email[0]}+{quote(doctype, safe='')}={quote(cstr(name), safe='')}@{email[1]}"
 
 
 def get_additional_timeline_content(doctype, docname):
