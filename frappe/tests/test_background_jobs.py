@@ -1,4 +1,5 @@
 import time
+import unittest
 from contextlib import contextmanager
 from unittest.mock import patch
 
@@ -16,6 +17,7 @@ from frappe.utils.background_jobs import (
 	generate_qname,
 	get_redis_conn,
 )
+from frappe.utils.background_jobs import enqueue
 
 
 class TestBackgroundJobs(IntegrationTestCase):
@@ -95,6 +97,55 @@ class TestBackgroundJobs(IntegrationTestCase):
 			self.assertLess(_test_JOB_HOOK.get("before_job"), _test_JOB_HOOK.get("after_job"))
 
 
+class TestBeforeEnqueueHook(unittest.TestCase):
+	def test_before_enqueue_hook_runs_at_queue_insertion_boundary(self):
+		hook = "frappe.tests.test_background_jobs.before_enqueue"
+		self.addCleanup(lambda: _test_JOB_HOOK.clear())
+		with (
+			patch.object(frappe, "get_hooks", return_value=[hook]),
+			patch.object(frappe, "get_attr", return_value=before_enqueue),
+			patch("frappe.utils.background_jobs.get_queue") as get_queue,
+			patch("frappe.utils.background_jobs._check_queue_size"),
+			patch("frappe.utils.background_jobs.create_job_id", return_value=None),
+			patch.object(frappe, "session", frappe._dict(user="Administrator"), create=True),
+			patch.object(frappe.local, "site", "test.local", create=True),
+			patch.object(frappe, "conf", frappe._dict(), create=True),
+		):
+			get_queue.return_value.count = 0
+			get_queue.return_value.enqueue_call.return_value = "job"
+			result = enqueue("frappe.handler.ping", queue="short")
+
+		self.assertEqual(result, "job")
+		self.assertEqual(
+			_test_JOB_HOOK["before_enqueue"],
+			{
+				"enqueue_after_commit": False,
+				"job_id": None,
+				"method": "frappe.handler.ping",
+				"queue": "short",
+			},
+		)
+
+	def test_before_enqueue_hook_can_fence_queue_insertion(self):
+		def reject(**kwargs):
+			raise RuntimeError("queue intake is fenced")
+
+		with (
+			patch.object(frappe, "get_hooks", return_value=["test.reject"]),
+			patch.object(frappe, "get_attr", return_value=reject),
+			patch("frappe.utils.background_jobs.get_queue") as get_queue,
+			patch("frappe.utils.background_jobs._check_queue_size"),
+			patch("frappe.utils.background_jobs.create_job_id", return_value=None),
+			patch.object(frappe, "session", frappe._dict(user="Administrator"), create=True),
+			patch.object(frappe.local, "site", "test.local", create=True),
+			patch.object(frappe, "conf", frappe._dict(), create=True),
+		):
+			get_queue.return_value.count = 0
+			with self.assertRaisesRegex(RuntimeError, "queue intake is fenced"):
+				enqueue("frappe.handler.ping", queue="short")
+			get_queue.return_value.enqueue_call.assert_not_called()
+
+
 def fail_function():
 	return 1 / 0
 
@@ -108,6 +159,10 @@ def before_job(*args, **kwargs):
 
 def after_job(*args, **kwargs):
 	_test_JOB_HOOK["after_job"] = time.time()
+
+
+def before_enqueue(**kwargs):
+	_test_JOB_HOOK["before_enqueue"] = kwargs
 
 
 @contextmanager

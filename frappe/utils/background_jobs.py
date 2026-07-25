@@ -195,6 +195,13 @@ def enqueue(
 		at_front = True
 
 	def enqueue_call():
+		for before_enqueue_task in frappe.get_hooks("before_enqueue"):
+			frappe.get_attr(before_enqueue_task)(
+				queue=queue,
+				method=method_name,
+				job_id=job_id,
+				enqueue_after_commit=enqueue_after_commit,
+			)
 		return q.enqueue_call(
 			"frappe.utils.background_jobs.execute_job",
 			on_success=Callback(func=on_success) if on_success else None,
