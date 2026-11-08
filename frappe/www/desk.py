@@ -61,8 +61,11 @@ def get_context(context):
 	except Exception as e:
 		raise get_session_boot_failed_error(e) from e
 
-	# this needs commit
+	# GET /desk otherwise rolls back at request end, so a freshly issued CSRF token
+	# never lands in the session. The first desk POST (the new-navigation prompt)
+	# then fails with "Invalid Request".
 	csrf_token = frappe.sessions.get_csrf_token()
+	frappe.local.flags.commit = True
 
 	hooks = frappe.get_hooks()
 	app_include_js = hooks.get("app_include_js", []) + frappe.conf.get("app_include_js", [])
