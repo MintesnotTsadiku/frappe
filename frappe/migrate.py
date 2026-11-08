@@ -324,6 +324,9 @@ class DBQueryProgressMonitor(threading.Thread):
 				self.conn_id,
 				as_dict=True,
 			)
+			# End this read-only transaction. Otherwise the metadata locks it took (System
+			# Settings meta after the cache clear) block migrate's ALTER TABLE on tabDocField.
+			frappe.db.rollback()
 
 			if not queries:
 				continue
