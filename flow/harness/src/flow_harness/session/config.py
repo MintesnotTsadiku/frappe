@@ -14,6 +14,25 @@ from flow_harness.events import ReasoningEffort
 GENERAL_AGENT = "general"
 
 
+class CredentialBinding(BaseModel):
+	"""The server-selected local credential and its binding at handoff."""
+
+	model_config = ConfigDict(extra="forbid", frozen=True)
+
+	reference: str
+	binding: str | None = None
+
+
+class BudgetScope(BaseModel):
+	"""Scope supplied by an authenticated daemon caller."""
+
+	model_config = ConfigDict(extra="forbid", frozen=True)
+
+	run_ref: str = Field(min_length=1, max_length=140)
+	company: str | None = None
+	project: str | None = None
+
+
 class SessionConfig(BaseModel):
 	"""Configuration for an agent session.
 
@@ -102,7 +121,10 @@ class SessionConfig(BaseModel):
 	credential_id: str | None = None
 	api_key: str | None = None
 	api_base: str | None = None
+	budget_credential: CredentialBinding | None = None
 	model_params: dict[str, Any] = Field(default_factory=dict)
+	budget_scope: BudgetScope | None = None
+	budget_operation: BudgetScope | None = None
 	small_model: SmallModelConfig | None = None
 	suggest_replies: bool = False
 	web_search: WebSearchConfig = Field(default_factory=lambda: WebSearchConfig())
@@ -128,11 +150,13 @@ class SessionConfig(BaseModel):
 		return self
 
 	def redacted(self) -> dict:
-		data = self.model_dump()
+		data = self.model_dump(exclude={"budget_scope", "budget_operation"})
+		data.pop("budget_credential", None)
 		for secret in ("callback_token", "api_key"):
 			if data.get(secret):
 				data[secret] = "***"
 		for agent in [*data["subagents"], data["small_model"] or {}, data["web_search"]]:
+			agent.pop("budget_credential", None)
 			if agent.get("api_key"):
 				agent["api_key"] = "***"
 		return data
@@ -154,6 +178,7 @@ class SmallModelConfig(BaseModel):
 	model: str = Field(min_length=1)
 	api_key: str | None = None
 	api_base: str | None = None
+	budget_credential: CredentialBinding | None = None
 	model_params: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -186,6 +211,7 @@ class SubagentConfig(BaseModel):
 	model: str | None = None
 	api_key: str | None = None
 	api_base: str | None = None
+	budget_credential: CredentialBinding | None = None
 	model_params: dict[str, Any] | None = None
 	reasoning_effort: ReasoningEffort | None = None
 	system_prompt: str | None = None

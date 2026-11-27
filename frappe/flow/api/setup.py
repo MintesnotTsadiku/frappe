@@ -265,7 +265,10 @@ def _check(
 	"""A one-message call to the model, or one input to embed: None when it answers, else why it
 	didn't."""
 	import litellm
+	from flow_harness.model.budget import BudgetError
 
+	from frappe.flow.daemon.provider_budget import complete_request, direct_budget
+	from frappe.flow.knowledge.embedder import embed_request
 	from frappe.flow.lib.model import litellm_route
 
 	provider, _sep, model = model_id.partition("/")
@@ -275,9 +278,18 @@ def _check(
 		kwargs["api_base"] = base_url
 	try:
 		if embedding:
-			litellm.embedding(**kwargs, input=["ping"])
+			kwargs.pop("timeout")
+			embed_request(["ping"], 20, budget=direct_budget(f"Flow Provider:{provider}"), **kwargs)
 		else:
-			litellm.completion(**kwargs, messages=[{"role": "user", "content": "ping"}], max_tokens=16)
+			complete_request(
+				model_id,
+				f"Flow Provider:{provider}",
+				**kwargs,
+				messages=[{"role": "user", "content": "ping"}],
+				max_tokens=16,
+			)
+	except BudgetError as error:
+		return _refused(error.code, _("The provider budget refused this request."))
 	except litellm.AuthenticationError:
 		return _refused("wrong_key", _("{0} didn't accept this key.").format(_label(provider)))
 	except (litellm.APIConnectionError, litellm.Timeout, litellm.ServiceUnavailableError):

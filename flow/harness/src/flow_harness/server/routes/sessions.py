@@ -35,7 +35,7 @@ from flow_harness.server.utils.workspace import (
 	resolve_allowed_path,
 )
 from flow_harness.session.attachments import MAX_ATTACHMENTS_PER_MESSAGE, MAX_SOURCE_BYTES, SNIFF_BYTES
-from flow_harness.session.config import SessionConfig
+from flow_harness.session.config import CredentialBinding, SessionConfig
 from flow_harness.session.file_changes import file_change_results, reconstruct_original
 from flow_harness.session.log import SessionLogError
 from flow_harness.session.session import RunHandle, Session
@@ -61,6 +61,7 @@ class SetModelRequest(BaseModel):
 	api_key: str | None = None
 	api_base: str | None = None
 	model_params: dict[str, Any] | None = None
+	budget_credential: CredentialBinding | None = None
 
 
 class ResumeRequest(BaseModel):
@@ -394,17 +395,18 @@ def create_sessions_router(
 		await session.set_model(
 			req.model, credential_id=req.credential_id, reasoning_effort=req.reasoning_effort
 		)
-		if {"api_key", "api_base", "model_params"} & req.model_fields_set:
+		if {"api_key", "api_base", "model_params", "budget_credential"} & req.model_fields_set:
 			# replaced as a unit, so no endpoint or params outlive the key they came with
 			config = session.config
-			previous = (config.api_key, config.api_base, config.model_params)
+			previous = (config.api_key, config.api_base, config.model_params, config.budget_credential)
 			config.api_key = req.api_key
 			config.api_base = req.api_base
 			config.model_params = req.model_params or {}
+			config.budget_credential = req.budget_credential
 			try:
 				store.save_meta(session)
 			except OSError:
-				config.api_key, config.api_base, config.model_params = previous
+				config.api_key, config.api_base, config.model_params, config.budget_credential = previous
 				# the model change is already durable — undo it, or the 500 lies
 				model, credential_id, effort = model_before
 				await session.set_model(model, credential_id=credential_id, reasoning_effort=effort)

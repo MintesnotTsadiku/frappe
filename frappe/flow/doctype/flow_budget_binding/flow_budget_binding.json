@@ -1,0 +1,40 @@
+{
+ "actions": [],
+ "creation": "2026-11-27 00:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "credential_reference",
+  "binding"
+ ],
+ "fields": [
+  {
+   "description": "Flow Provider:<name> or Flow Model:<name>, depending on where the API key is stored.",
+   "fieldname": "credential_reference",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Credential Reference",
+   "reqd": 1
+  },
+  {
+   "fieldname": "binding",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Authority Binding",
+   "reqd": 1
+  }
+ ],
+ "istable": 1,
+ "links": [],
+ "modified": "2026-11-27 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Flow",
+ "name": "Flow Budget Binding",
+ "owner": "Administrator",
+ "permissions": [],
+ "row_format": "Dynamic",
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": []
+}

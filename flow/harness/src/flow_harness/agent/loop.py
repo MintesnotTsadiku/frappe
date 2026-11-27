@@ -73,10 +73,11 @@ from flow_harness.events import (
 from flow_harness.extensions.hooks import PreToolUseDecision
 from flow_harness.model import Model, ModelRequest, ProviderError, get_model
 from flow_harness.model.auth import resolve_model_auth
+from flow_harness.model.budget import Budget
 from flow_harness.model.cancellation import ModelCancelled, await_with_cancellation, iterate_with_cancellation
 from flow_harness.model.credentials import CredentialStore
 from flow_harness.model.reasoning import reasoning_params
-from flow_harness.session.config import SessionConfig
+from flow_harness.session.config import CredentialBinding, SessionConfig
 from flow_harness.session.transcript import PendingApproval
 from flow_harness.tools import SubagentOutcome, Tool, ToolContext
 from flow_harness.tools.builtins.common import DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, truncate
@@ -176,6 +177,7 @@ class LoopInputs:
 	server_tools: dict[str, Tool] | None = None
 	extension_runtime: ExtensionRuntime | None = None
 	budget: TokenBudget | None = None
+	provider_budget: Callable[[CredentialBinding | None], Budget | None] | None = None
 
 
 _ABORTED = json.dumps(
@@ -897,6 +899,9 @@ async def _review_model(inputs: LoopInputs) -> Model:
 			**(reasoning_params(name, "off") or {}),
 		},
 		refresh_auth=auth.refresh,
+		budget=inputs.provider_budget(small.budget_credential if small else inputs.config.budget_credential)
+		if inputs.provider_budget
+		else None,
 	)
 
 
@@ -919,6 +924,7 @@ async def _authenticated_model(inputs: LoopInputs) -> Model:
 		headers=auth.headers,
 		params=inputs.config.model_params,
 		refresh_auth=auth.refresh,
+		budget=inputs.provider_budget(inputs.config.budget_credential) if inputs.provider_budget else None,
 	)
 
 

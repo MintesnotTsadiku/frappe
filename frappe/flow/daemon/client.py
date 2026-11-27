@@ -122,12 +122,15 @@ class DaemonClient:
 		api_key: str | None = None,
 		api_base: str | None = None,
 		model_params: dict | None = None,
+		budget_credential: dict | None = None,
 	) -> dict:
 		body = {
 			"model": model,
 			"api_key": api_key,
 			"api_base": api_base,
 		}
+		if budget_credential is not None:
+			body["budget_credential"] = budget_credential
 		if model_params:
 			body["model_params"] = model_params
 		return self._call("POST", f"/sessions/{sid}/model", json=body)

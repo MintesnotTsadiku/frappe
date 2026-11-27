@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import AsyncIterator, Callable, Mapping
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any, cast
 
@@ -32,6 +33,7 @@ from flow_harness.events import (
 	UserMessage,
 )
 from flow_harness.model.base import Model, ModelRequest
+from flow_harness.model.budget import candidate_for, local_model, measured_usage
 from flow_harness.model.cancellation import ModelCancelled, await_with_cancellation, iterate_with_cancellation
 from flow_harness.model.catalog import model_supports_images
 from flow_harness.model.content import (
@@ -41,6 +43,7 @@ from flow_harness.model.content import (
 	tool_result_text,
 )
 from flow_harness.model.errors import normalize_litellm_error
+from flow_harness.model.managed_transport import async_client
 from flow_harness.model.retry import run_with_retries
 from flow_harness.model.tool_display import tool_call_display_ready_event, with_tool_call_displays
 
@@ -143,6 +146,41 @@ class LiteLLMModel(Model):
 		kwargs["num_retries"] = 0
 		return kwargs
 
+	@asynccontextmanager
+	async def _provider_attempt(self, kwargs: dict[str, Any]):
+		if self.budget is None or (
+			kwargs["model"] == self.name
+			and local_model(self.name, kwargs.get("api_base"))
+			and not (
+				kwargs.keys()
+				- {
+					"model",
+					"api_base",
+					"api_key",
+					"messages",
+					"tools",
+					"stream",
+					"stream_options",
+					"max_tokens",
+					"num_retries",
+					"temperature",
+					"timeout",
+				}
+			)
+		):
+			yield None
+			return
+		candidate = completion_candidate(kwargs, self.name, self.model) if self._api_key else None
+		async with self.budget.async_attempt(candidate) as attempt:
+			if attempt is None:
+				yield None
+				return
+			assert candidate is not None
+			apply_managed_completion(kwargs, candidate)
+			async with async_client(kwargs, _completion_timeout(kwargs)) as client:
+				kwargs["client"] = client
+				yield attempt
+
 	async def _response(
 		self,
 		kwargs: dict[str, Any],
@@ -151,14 +189,17 @@ class LiteLLMModel(Model):
 	) -> AsyncIterator[AnyEvent]:
 		import litellm
 
-		try:
-			response = await await_with_cancellation(
-				asyncio.wait_for(litellm.acompletion(**kwargs), _completion_timeout(kwargs)), cancellation
-			)
-		except ModelCancelled:
-			raise
-		except Exception as exc:
-			raise normalize_litellm_error(exc, provider=self.provider) from exc
+		async with self._provider_attempt(kwargs) as attempt:
+			try:
+				response = await await_with_cancellation(
+					asyncio.wait_for(litellm.acompletion(**kwargs), _completion_timeout(kwargs)), cancellation
+				)
+			except ModelCancelled:
+				raise
+			except Exception as exc:
+				raise normalize_litellm_error(exc, provider=self.provider) from exc
+			if attempt is not None:
+				attempt.complete(measured_usage(_attr(response, "usage")), _attr(response, "id"))
 		choice = (_attr(response, "choices") or [None])[0]
 		message = _attr(choice, "message")
 		content = _message_content(message)
@@ -190,39 +231,119 @@ class LiteLLMModel(Model):
 		assembler = _ResponseAssembler(tool_display_templates=tool_display_templates)
 		timeout = _completion_timeout(kwargs)
 		stream: AsyncIterator[Any] | None = None
-		try:
-			# acompletion returns `ModelResponse | CustomStreamWrapper` and picks at
-			# runtime from the `stream` value, which is inside our kwargs dict — so the
-			# checker cannot know this call takes the iterator branch. The await itself
-			# only opens the response; chunks come from iterating it.
-			stream = cast(
-				AsyncIterator[Any],
-				await await_with_cancellation(
-					asyncio.wait_for(litellm.acompletion(**kwargs), timeout),
-					cancellation,
-				),
-			)
-			async for chunk in iterate_with_cancellation(stream, cancellation, idle_timeout=timeout):
-				for event in assembler.add_chunk(chunk):
-					yield event
-		except ModelCancelled:
-			assembler.finish_reason = "aborted"  # keep any partial content in the terminal
-		except Exception as exc:
-			error = normalize_litellm_error(exc, provider=self.provider)
-			# LiteLLM withholds the finish reason until its trailing usage chunk.
-			finish_reason = assembler.finish_reason or _attr(stream, "received_finish_reason")
-			if error.kind not in {"timeout", "transport"} or finish_reason is None:
-				raise error from exc
-			assembler.finish_reason = finish_reason
-			chunks = _attr(stream, "chunks")
-			if chunks:
-				response = litellm.stream_chunk_builder(
-					chunks=chunks, messages=kwargs["messages"], logging_obj=_attr(stream, "logging_obj")
+		async with self._provider_attempt(kwargs) as attempt:
+			try:
+				# acompletion returns `ModelResponse | CustomStreamWrapper` and picks at
+				# runtime from the `stream` value, which is inside our kwargs dict — so the
+				# checker cannot know this call takes the iterator branch. The await itself
+				# only opens the response; chunks come from iterating it.
+				stream = cast(
+					AsyncIterator[Any],
+					await await_with_cancellation(
+						asyncio.wait_for(litellm.acompletion(**kwargs), timeout),
+						cancellation,
+					),
 				)
-				assembler.raw_usage = _attr(response, "usage")
+				async for chunk in iterate_with_cancellation(stream, cancellation, idle_timeout=timeout):
+					for event in assembler.add_chunk(chunk):
+						yield event
+			except ModelCancelled:
+				assembler.finish_reason = "aborted"  # keep any partial content in the terminal
+			except Exception as exc:
+				error = normalize_litellm_error(exc, provider=self.provider)
+				# LiteLLM withholds the finish reason until its trailing usage chunk.
+				finish_reason = assembler.finish_reason or _attr(stream, "received_finish_reason")
+				if error.kind not in {"timeout", "transport"} or finish_reason is None:
+					raise error from exc
+				assembler.finish_reason = finish_reason
+				chunks = _attr(stream, "chunks")
+				if chunks:
+					response = litellm.stream_chunk_builder(
+						chunks=chunks, messages=kwargs["messages"], logging_obj=_attr(stream, "logging_obj")
+					)
+					assembler.raw_usage = _attr(response, "usage")
+			if attempt is not None and assembler.finish_reason != "aborted":
+				attempt.complete(measured_usage(assembler.raw_usage), assembler.response_id)
 
 		yield assembler.assistant_message(self)
 		yield assembler.usage()
+
+
+def completion_candidate(kwargs: Mapping[str, Any], route: str, model: str) -> dict | None:
+	if not _bounded_completion(kwargs, route):
+		return None
+	bound = kwargs.get("max_tokens", kwargs.get("max_completion_tokens"))
+	if bound is None:
+		_, bound = litellm_limits(route)
+	if type(bound) is not int or bound <= 0:
+		return None
+	return candidate_for(model.partition("/")[2] or model, managed_input_limit(route), bound)
+
+
+def apply_managed_completion(kwargs: dict, candidate: dict) -> None:
+	limit = "max_completion_tokens" if "max_completion_tokens" in kwargs else "max_tokens"
+	kwargs[limit] = candidate["output_tokens_max"]
+	kwargs.update(max_retries=0, num_retries=0, caching=False)
+	for message in kwargs["messages"]:
+		for block in message.get("content") or []:
+			if isinstance(block, dict):
+				block.pop("cache_control", None)
+	for tool in kwargs.get("tools", []):
+		tool.pop("cache_control", None)
+
+
+def managed_input_limit(route: str) -> int | None:
+	import litellm
+
+	try:
+		limit = litellm.get_model_info(route).get("max_input_tokens")
+	except Exception:
+		return None
+	return limit if type(limit) is int and limit > 0 else None
+
+
+def _bounded_completion(kwargs: Mapping[str, Any], model: str) -> bool:
+	import litellm
+
+	if litellm.model_fallbacks or litellm.context_window_fallbacks:
+		return False
+	route_provider = model.partition("/")[0]
+	if route_provider not in {"openai", "anthropic", "gemini", "openrouter"}:
+		return False
+	if kwargs["model"] != model or not kwargs.get("api_key"):
+		return False
+	if kwargs.keys() - {
+		"model",
+		"messages",
+		"api_key",
+		"api_base",
+		"stream",
+		"stream_options",
+		"tools",
+		"max_tokens",
+		"max_completion_tokens",
+		"num_retries",
+		"timeout",
+		"request_timeout",
+		"temperature",
+		"top_p",
+		"stop",
+		"seed",
+		"reasoning_effort",
+		"thinking",
+		"response_format",
+		"tool_choice",
+	}:
+		return False
+	if "max_completion_tokens" in kwargs and (route_provider != "openai" or "max_tokens" in kwargs):
+		return False
+	if any(tool.get("type") != "function" for tool in kwargs.get("tools", [])):
+		return False
+	return all(
+		isinstance(block, str) or (isinstance(block, dict) and block.get("type") == "text")
+		for message in kwargs["messages"]
+		for block in (message.get("content") or [])
+	)
 
 
 def _completion_timeout(kwargs: Mapping[str, Any]) -> float | None:

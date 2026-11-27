@@ -26,6 +26,7 @@ from starlette.types import Lifespan
 
 from flow_harness import config as server_config
 from flow_harness.model.auth import AuthError
+from flow_harness.model.budget import AttemptJournal, Budget, BudgetError, BudgetFactory, post_budget
 from flow_harness.server.audit import AuditLog
 from flow_harness.server.policy import ServerPolicy
 from flow_harness.server.request_limits import RequestSizeLimit
@@ -128,6 +129,9 @@ def create_app(
 	# one isolated store per site; a request only ever sees its own site's store
 	partitions: dict[str, SessionStore] = {}
 
+	def partition_path(tenant: Tenant) -> str:
+		return tenant.data_dir or os.path.join(store.data_dir, "tenants", tenant.site)
+
 	def partition_for(tenant: Tenant) -> SessionStore:
 		"""The site's partition, made on first use and again if a reinstall deleted its folder."""
 		partition = partitions.get(tenant.site)
@@ -140,6 +144,7 @@ def create_app(
 				data_dir=tenant.data_dir,
 				extensions=tenant.extensions,
 				callback_headers=tenant.callback_headers,
+				provider_budget=_tenant_budget(tenant, partition_path(tenant)),
 				relocate=partial(tenants.path_for_site, tenant.site) if tenants is not None else None,
 			)
 			partition.report_unconfirmed_run_ends()
@@ -240,3 +245,37 @@ def create_app(
 		app.mount("/", StaticFiles(directory=webui_dir, html=True), name="webui")
 
 	return app
+
+
+def _tenant_budget(tenant: Tenant, data_dir: str) -> BudgetFactory | None:
+	if not tenant.budget_url:
+		return None
+	headers = {**tenant.callback_headers, "X-Harness-Token": tenant.token}
+
+	def reserve(payload: dict) -> bool:
+		reply = post_budget(tenant.budget_url, headers, {"operation": "reserve", "payload": payload})
+		if reply.get("managed") is False:
+			if (payload.get("credential") or {}).get("binding"):
+				raise BudgetError("budget_unconfigured")
+			return False
+		if reply.get("dispatch_granted") is True and reply.get("attempt_id") == payload["attempt_id"]:
+			return True
+		raise BudgetError("budget_unavailable")
+
+	def settle(payload: dict) -> None:
+		reply = post_budget(tenant.budget_url, headers, {"operation": "settle", "payload": payload})
+		if reply.get("attempt_id") != payload["attempt_id"]:
+			raise BudgetError("budget_unavailable")
+
+	def factory(scope, credential):
+		return Budget(
+			AttemptJournal(os.path.join(data_dir, "budget-attempts.sqlite3")),
+			scope.run_ref,
+			reserve,
+			settle,
+			credential,
+			scope.company,
+			scope.project,
+		)
+
+	return factory
