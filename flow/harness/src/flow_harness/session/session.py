@@ -23,6 +23,7 @@ from collections import deque
 from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
+from functools import partial
 from typing import TYPE_CHECKING, Literal
 
 from flow_harness import config as server_config
@@ -56,6 +57,7 @@ from flow_harness.events import (
 )
 from flow_harness.model import Model, ModelRequest, ProviderError, get_model
 from flow_harness.model.auth import resolve_model_auth
+from flow_harness.model.budget import Budget, BudgetError, BudgetFactory
 from flow_harness.model.cancellation import ModelCancelled
 from flow_harness.model.catalog import provider_label
 from flow_harness.model.credentials import CredentialStore
@@ -67,7 +69,7 @@ from flow_harness.session.attachments import (
 	AttachmentError,
 	AttachmentStore,
 )
-from flow_harness.session.config import SessionConfig
+from flow_harness.session.config import BudgetScope, CredentialBinding, SessionConfig
 from flow_harness.session.log import SessionLog
 from flow_harness.session.prompt import doc_roots
 from flow_harness.session.skills import (
@@ -214,6 +216,7 @@ class Session:
 		on_first_message: Callable[[Session], None] | None = None,
 		compose_tools: Callable[[SessionConfig], dict[str, Tool]],
 		run_end_marker: Path,
+		provider_budget: BudgetFactory | None = None,
 	):
 		self.id = sid
 		self.config = config
@@ -230,6 +233,7 @@ class Session:
 		self.server_tools = server_tools
 		self.extension_runtime = extension_runtime
 		self._persist_meta = persist_meta
+		self._provider_budget = provider_budget
 		self._resolve_skill = resolve_skill
 		self._persist_skill_catalog = persist_skill_catalog
 		self._on_settled = on_settled
@@ -341,6 +345,7 @@ class Session:
 				and not any(row["type"] == "user_message" for row in self.log.read_since(0))
 			):
 				self._on_first_message(self)
+			self._start_budget_operation()
 			self._budget = loop.TokenBudget(self.config.token_budget)
 			inputs = self._loop_inputs(model, before_tool_call, after_tool_call)
 			self._run_model = model
@@ -371,6 +376,8 @@ class Session:
 			approval = self.transcript.pending_approval
 			validate_resume(approval, approval_seq, answers)
 			assert approval is not None  # narrowed by validate_resume
+			if self.config.budget_operation is None:
+				self._start_budget_operation()
 			inputs = self._loop_inputs(model, before_tool_call, after_tool_call)
 			self._run_model = model
 			return self._start_operation(loop.resume(approval, answers, inputs))
@@ -441,6 +448,7 @@ class Session:
 				raise SessionConflict("run is paused for approval; resolve it before compacting")
 			if not self.transcript.messages:
 				raise SessionConflict("nothing to compact")
+			self._start_budget_operation()
 			inputs = self._loop_inputs(model, None, None)
 			return self._start_operation(
 				loop.compact(instructions, inputs),
@@ -603,6 +611,27 @@ class Session:
 		self._task = task
 		return RunHandle(status="started", from_seq=from_seq, task=task)
 
+	def _start_budget_operation(self) -> None:
+		if self._provider_budget is None:
+			return
+		previous = self.config.budget_operation
+		self.config.budget_operation = self.config.budget_scope or BudgetScope(
+			run_ref=f"flow-{uuid.uuid4().hex}"
+		)
+		if self._persist_meta is not None:
+			try:
+				self._persist_meta(self)
+			except OSError:
+				self.config.budget_operation = previous
+				raise
+
+	def _model_budget(self, scope: BudgetScope | None, credential: CredentialBinding | None) -> Budget | None:
+		if self._provider_budget is not None and scope is not None:
+			return self._provider_budget(scope, credential)
+		if scope is not None or (credential is not None and credential.binding):
+			raise BudgetError("budget_unconfigured")
+		return None
+
 	def _loop_inputs(
 		self, model: Model | None, before_tool_call: BeforeHook | None, after_tool_call: AfterHook | None
 	) -> loop.LoopInputs:
@@ -636,6 +665,9 @@ class Session:
 			server_tools=self.server_tools,
 			extension_runtime=self.extension_runtime,
 			budget=self._budget,
+			provider_budget=partial(
+				self._model_budget, self.config.budget_operation or self.config.budget_scope
+			),
 		)
 
 	async def _store_tool_image(self, name: str, data: bytes) -> AttachmentContent:
@@ -773,7 +805,7 @@ class Session:
 		)
 
 	def _start_titling(self, first_message: str) -> None:
-		task = asyncio.create_task(self._title_session(first_message))
+		task = asyncio.create_task(self._title_session(first_message, self.config.budget_operation))
 		task.add_done_callback(_mark_retrieved)
 		task.add_done_callback(self._settled)
 		self._title_task = task
@@ -783,7 +815,7 @@ class Session:
 			if task is not None and not task.done():
 				task.cancel()
 
-	async def _title_session(self, first_message: str) -> None:
+	async def _title_session(self, first_message: str, scope: BudgetScope | None) -> None:
 		"""Runs alongside the first turn on its own model instance, so it never blocks
 		or steals the run's stream. Best-effort: any failure leaves the fallback."""
 		try:
@@ -806,6 +838,9 @@ class Session:
 					**(reasoning_params(name, "off") or {}),
 				},
 				refresh_auth=auth.refresh,
+				budget=self._model_budget(
+					scope, small.budget_credential if small else self.config.budget_credential
+				),
 			)
 			title, usage = await titling.generate_title(model, first_message)
 			if usage is not None:
@@ -828,12 +863,12 @@ class Session:
 	def _start_suggesting(self) -> None:
 		if self._replies_task is not None:
 			self._replies_task.cancel()  # its replies answer an older turn
-		task = asyncio.create_task(self._suggest_replies(self._run_model))
+		task = asyncio.create_task(self._suggest_replies(self._run_model, self.config.budget_operation))
 		task.add_done_callback(_mark_retrieved)
 		task.add_done_callback(self._settled)
 		self._replies_task = task
 
-	async def _suggest_replies(self, model: Model | None) -> None:
+	async def _suggest_replies(self, model: Model | None, scope: BudgetScope | None) -> None:
 		"""Uses the chat's own model, prompt and tools, so it reuses the prompt cache.
 		Failures are ignored."""
 		last = self.transcript.messages[-1]
@@ -853,6 +888,7 @@ class Session:
 					headers=auth.headers,
 					params=self.config.model_params,
 					refresh_auth=auth.refresh,
+					budget=self._model_budget(scope, self.config.budget_credential),
 				)
 			request = ModelRequest(
 				messages=[*self.transcript.messages, UserMessage(content=suggest_replies.REPLIES_PROMPT)],

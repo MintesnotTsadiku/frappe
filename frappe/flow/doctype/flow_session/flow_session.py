@@ -361,6 +361,7 @@ class FlowSession(Document):
 				api_key=config["api_key"],
 				api_base=config["api_base"],
 				model_params=config.get("model_params"),
+				budget_credential=config.get("budget_credential"),
 			)
 
 	def set_title(self, title: str) -> None:

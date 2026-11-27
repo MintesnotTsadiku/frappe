@@ -13,6 +13,7 @@ from typing import Any
 
 from flow_harness.model.auth import RefreshAuth, register_auth_provider
 from flow_harness.model.base import Model, ModelRequest
+from flow_harness.model.budget import Budget
 from flow_harness.model.cancellation import ModelCancelled
 from flow_harness.model.errors import ProviderError
 from flow_harness.model.litellm import LiteLLMModel
@@ -40,14 +41,15 @@ def get_model(
 	headers: dict[str, str] | None = None,
 	params: dict[str, Any] | None = None,
 	refresh_auth: RefreshAuth | None = None,
+	budget: Budget | None = None,
 ) -> Model:
 	kwargs: dict[str, Any] = {"api_key": api_key, "api_base": api_base, "headers": headers, "params": params}
 	if refresh_auth is not None:
 		kwargs["refresh_auth"] = refresh_auth
 	build_model = _NATIVE_PROVIDERS.get(name.split("/", 1)[0])
-	if build_model is not None:
-		return build_model(name, **kwargs)
-	return LiteLLMModel(name, **kwargs)
+	model = build_model(name, **kwargs) if build_model is not None else LiteLLMModel(name, **kwargs)
+	model.budget = budget
+	return model
 
 
 register_provider("mock", lambda name, **kwargs: MockModel())

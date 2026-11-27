@@ -22,6 +22,7 @@ from urllib.parse import urlsplit
 
 from flow_harness import config as server_config
 from flow_harness.extensions import ExtensionRuntime, unload_extension_modules
+from flow_harness.model.budget import BudgetFactory
 from flow_harness.model.credentials import CredentialStore
 from flow_harness.path_policy import canonical_path, is_path_allowed, normalize_roots
 from flow_harness.session.attachments import AttachmentStore
@@ -106,6 +107,7 @@ class SessionStore:
 		tool_allowlist: Collection[str] | None = None,
 		callback_hosts: Collection[str] | None = None,
 		callback_headers: Mapping[str, str] | None = None,
+		provider_budget: BudgetFactory | None = None,
 		relocate: Callable[[str], str] | None = None,
 		session_cache: SessionCache | None = None,
 	):
@@ -129,6 +131,7 @@ class SessionStore:
 		# (Tenant.callback_headers), over each session's own
 		self.callback_headers = dict(callback_headers or {})
 		self._relocate = relocate
+		self._provider_budget = provider_budget
 		self.credential_store = credential_store or CredentialStore(server_config.CREDENTIALS_PATH)
 		self._extension_paths = tuple(extension_paths or ())
 		self._extensions_enabled = extensions_enabled
@@ -175,6 +178,7 @@ class SessionStore:
 		data_dir: str | None = None,
 		extensions: Collection[str] = (),
 		callback_headers: Mapping[str, str] | None = None,
+		provider_budget: BudgetFactory | None = None,
 		relocate: Callable[[str], str] | None = None,
 	) -> SessionStore:
 		"""One site's partition: its own sessions, credentials, fences and extensions
@@ -202,6 +206,7 @@ class SessionStore:
 			tool_allowlist=self.tool_allowlist,
 			callback_hosts=callback_hosts if callback_hosts is not None else self.callback_hosts,
 			callback_headers=callback_headers,
+			provider_budget=provider_budget,
 			relocate=relocate,
 			session_cache=self._session_cache,
 		)
@@ -540,6 +545,7 @@ class SessionStore:
 			on_first_message=self._first_message,
 			compose_tools=self._compose_tools,
 			run_end_marker=Path(paths.run_end_marker),
+			provider_budget=self._provider_budget,
 		)
 
 	def _session_settled(self, session: Session) -> None:

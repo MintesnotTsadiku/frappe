@@ -148,10 +148,11 @@ class FlowModel(Document):
 				title=_("Missing Dependency"),
 			)
 
-		from frappe.flow.lib.model import litellm_route, resolve_provider_credentials
+		from frappe.flow.daemon.provider_budget import complete_request
+		from frappe.flow.lib.model import litellm_route, model_credential, resolve_provider_credentials
 
 		provider_creds = resolve_provider_credentials(self.model_id, self.provider)
-		api_key = self.get_password("api_key", raise_exception=False) or provider_creds.get("api_key") or None
+		api_key, reference = model_credential(self, provider_creds)
 		model, base_url = litellm_route(self.model_id, self.base_url or provider_creds.get("base_url"))
 
 		kwargs = {
@@ -166,7 +167,7 @@ class FlowModel(Document):
 			kwargs["api_base"] = base_url
 
 		try:
-			litellm.completion(**kwargs)
+			complete_request(self.model_id, reference, **kwargs)
 		except Exception as e:
 			frappe.throw(str(e)[:500] or type(e).__name__, title=_(type(e).__name__))
 

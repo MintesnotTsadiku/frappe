@@ -7,7 +7,12 @@
   "small_model",
   "web_search_section",
   "search_provider",
-  "search_api_key"
+  "search_api_key",
+  "integrations_tab",
+  "manage_paid_credentials",
+  "authority_url",
+  "authority_credential",
+  "provider_budget_bindings"
  ],
  "fields": [
   {
@@ -36,6 +41,35 @@
    "fieldtype": "Password",
    "label": "Search API Key",
    "mandatory_depends_on": "eval:doc.search_provider && doc.search_provider !== \"DuckDuckGo\""
+  },
+  {
+   "fieldname": "integrations_tab",
+   "fieldtype": "Tab Break",
+   "label": "Integrations"
+  },
+  {
+   "default": "0",
+   "fieldname": "manage_paid_credentials",
+   "fieldtype": "Check",
+   "label": "Manage Paid Credentials"
+  },
+  {
+   "fieldname": "authority_url",
+   "fieldtype": "Data",
+   "label": "Budget Authority HTTPS URL",
+   "options": "URL"
+  },
+  {
+   "description": "Site-scoped API token in key:secret form.",
+   "fieldname": "authority_credential",
+   "fieldtype": "Password",
+   "label": "Budget Authority Credential"
+  },
+  {
+   "fieldname": "provider_budget_bindings",
+   "fieldtype": "Table",
+   "label": "Provider Budget Bindings",
+   "options": "Flow Budget Binding"
   }
  ],
  "issingle": 1,

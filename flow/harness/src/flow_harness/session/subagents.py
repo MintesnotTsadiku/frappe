@@ -225,6 +225,7 @@ def _child_inputs(
 				"api_key": agent.api_key,
 				"api_base": agent.api_base,
 				"model_params": agent.model_params or {},
+				"budget_credential": agent.budget_credential,
 			}
 		)
 	tools = inputs.server_tools or {}

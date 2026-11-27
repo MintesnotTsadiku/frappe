@@ -65,14 +65,25 @@ def model_config(model: str, *, check_permission: bool = True) -> dict[str, Any]
 	if not doc.enabled:
 		frappe.throw(_("Flow Model {0} is disabled.").format(model), title=_("Disabled Model"))
 	provider = resolve_provider_credentials(doc.model_id, doc.provider)
+	key, reference = model_credential(doc, provider)
 	config = {
 		"model": doc.model_id,
-		"api_key": doc.get_password("api_key", raise_exception=False) or provider.get("api_key"),
+		"api_key": key,
 		"api_base": doc.base_url or provider.get("base_url"),
 	}
+	from frappe.flow.daemon.provider_budget import credential_reference
+
+	if credential := credential_reference(reference):
+		config["budget_credential"] = credential
 	if model_params := doc.model_params():
 		config["model_params"] = model_params
 	return config
+
+
+def model_credential(doc, provider: dict) -> tuple[str | None, str | None]:
+	if key := doc.get_password("api_key", raise_exception=False):
+		return key, f"Flow Model:{doc.name}"
+	return provider.get("api_key"), provider.get("credential_reference")
 
 
 def resolve_provider_credentials(model_id: str, provider: str | None = None) -> dict[str, Any]:
@@ -84,7 +95,7 @@ def resolve_provider_credentials(model_id: str, provider: str | None = None) -> 
 				_("Grove is turned off. Turn it on, or pick another model, in Settings → Models."),
 				title=_("Grove Turned Off"),
 			)
-		return site_credentials()
+		return {**site_credentials(), "credential_reference": f"Flow Provider:{SITE_PROVIDER}"}
 	try:
 		import litellm
 
@@ -102,6 +113,7 @@ def resolve_provider_credentials(model_id: str, provider: str | None = None) -> 
 	return {
 		"api_key": doc.get_password("api_key", raise_exception=False) or None,
 		"base_url": doc.base_url or None,
+		"credential_reference": f"Flow Provider:{doc.name}",
 	}
 
 

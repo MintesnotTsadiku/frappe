@@ -269,6 +269,7 @@ def tenant_template() -> dict:
 		"callback_hosts": [urlsplit(_callback_base()).netloc],
 		# Frappe serves the site this header names
 		"callback_headers": {"X-Frappe-Site-Name": "{site}"},
+		"budget_url": f"{_callback_base()}/api/method/frappe.flow.daemon.provider_budget.dispatch",
 		"data_dir": str(site / "private" / "flow"),
 		"extensions": [str(site / "private" / "flow" / EXTENSIONS_DIR)],
 	}

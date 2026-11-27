@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from flow_harness.events import AnyEvent, AssistantMessage, TranscriptMessage
+from flow_harness.model.budget import Budget
 
 
 @dataclass(slots=True)
@@ -45,6 +46,7 @@ class ModelRequest:
 
 
 class Model(abc.ABC):
+	budget: Budget | None = None
 	name: str
 	api: str = "unknown"
 	provider: str = "unknown"

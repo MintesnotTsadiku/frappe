@@ -24,6 +24,7 @@ _KEYS = (
 	"ignore_hidden_files",
 	"callback_hosts",
 	"callback_headers",
+	"budget_url",
 	"data_dir",
 	"extensions",
 )
@@ -52,6 +53,7 @@ class Tenant:
 	allowed_roots: tuple[str, ...] | None = None
 	callback_hosts: tuple[str, ...] | None = None
 	callback_headers: dict[str, str] = field(default_factory=dict)
+	budget_url: str | None = None
 	ignore_hidden_files: bool = False
 	data_dir: str | None = None
 	extensions: tuple[str, ...] = ()
@@ -73,6 +75,7 @@ class TenantTemplate:
 	allowed_roots: tuple[str, ...] | None = None
 	callback_hosts: tuple[str, ...] | None = None
 	callback_headers: dict[str, str] = field(default_factory=dict)
+	budget_url: str | None = None
 	ignore_hidden_files: bool = False
 	data_dir: str | None = None
 	extensions: tuple[str, ...] = ()
@@ -94,6 +97,7 @@ class TenantTemplate:
 			allowed_roots=None if self.allowed_roots is None else tuple(map(fill, self.allowed_roots)),
 			callback_hosts=None if self.callback_hosts is None else tuple(map(fill, self.callback_hosts)),
 			callback_headers={key: fill(value) for key, value in self.callback_headers.items()},
+			budget_url=fill(self.budget_url) if self.budget_url else None,
 			ignore_hidden_files=self.ignore_hidden_files,
 			data_dir=None if self.data_dir is None else fill(self.data_dir),
 			extensions=tuple(map(fill, self.extensions)),
@@ -163,12 +167,16 @@ def load_tenants(raw: str) -> TenantTemplate:
 		isinstance(p, str) and os.path.isabs(p) for p in extensions
 	):
 		raise ValueError("extensions must be a list of absolute paths")
+	budget_url = data.get("budget_url")
+	if budget_url is not None and not isinstance(budget_url, str):
+		raise ValueError("budget_url must be a URL")
 	return TenantTemplate(
 		token_file=token_file,
 		token_key=token_key,
 		allowed_roots=tuple(roots),
 		callback_hosts=None if hosts is None else tuple(hosts),
 		callback_headers=headers,
+		budget_url=budget_url,
 		ignore_hidden_files=ignore_hidden_files,
 		data_dir=data_dir,
 		extensions=tuple(extensions),

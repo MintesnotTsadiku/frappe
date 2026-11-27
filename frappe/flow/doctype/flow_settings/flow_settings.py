@@ -25,3 +25,27 @@ class FlowSettings(Document):
 			frappe.throw(
 				_("{0} needs a Search API Key.").format(self.search_provider), title=_("Missing API Key")
 			)
+
+		self._validate_budget_integration()
+
+	def _validate_budget_integration(self):
+		from frappe.flow.daemon.provider_budget import authority_url
+
+		references = [row.credential_reference for row in self.provider_budget_bindings]
+		if len(set(references)) != len(references):
+			frappe.throw(_("Each provider budget credential reference must be unique."))
+		for reference in references:
+			doctype, _separator, name = reference.partition(":")
+			if doctype not in {"Flow Model", "Flow Provider"} or not frappe.db.exists(doctype, name):
+				frappe.throw(_("A provider budget binding must name an existing Flow credential."))
+
+		if previous := self.get_doc_before_save():
+			old_references = {row.credential_reference for row in previous.provider_budget_bindings}
+			if old_references.difference(references) or (
+				previous.manage_paid_credentials and not self.manage_paid_credentials
+			):
+				frappe.throw(_("Managed Flow credentials cannot be restored to direct access."))
+		if self.manage_paid_credentials and (
+			not references or not authority_url(self.authority_url) or not self.authority_credential
+		):
+			frappe.throw(_("Managed Flow credentials need an HTTPS authority, an API token, and a binding."))

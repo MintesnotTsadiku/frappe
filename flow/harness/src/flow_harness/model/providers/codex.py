@@ -305,6 +305,10 @@ class CodexModel(Model):
 		"""One provider attempt. Headers are rebuilt here so a refreshed token is used."""
 		if request.cancellation is not None and request.cancellation.is_set():
 			raise ModelCancelled
+		if self.budget is not None:
+			# The subscription endpoint does not accept a caller-enforced output cap.
+			async with self.budget.async_attempt(None):
+				pass
 		url = f"{self._api_base.rstrip('/')}/codex/responses"
 		stream_context = client.stream(
 			"POST", url, json=self._payload(request), headers=self._request_headers()
